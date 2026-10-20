@@ -40,7 +40,75 @@ Two roles. Decide which one you are: the session the user ran `/host` in is the 
    - Follow-up fixes go to the owner of the file that is broken, unless that worker is busy and another could do it safely: then give it to the idle worker and update the ownership list first.
    - Broadcast the same task to `all` only when it is truly identical for each worker (like a hello); otherwise assign by name.
    - Tell the user the split in one table when you assign (worker, task, size).
-8. **Watch context.** When a report says "NEEDS COMPACT" or "ctx ~100k+", stop giving that worker large tasks, send it only small ones, and tell the user to run `/compact` in that window.
+8. **Watch context.** When a report says "NEEDS COMPACT" or "ctx ~100k+", stop giving that worker large tasks, send it only small ones, and run `command` `/compact` on that worker (or tell the user to run `/compact` in its window if the command tool is not loaded).
+
+## Host quick start (one run, in order)
+
+1. `peers` -> note the workers; if names are random, `rename` idle ones to `worker-1`, `worker-2`, ... (see Rename).
+2. Write `CONTRACT.md` (ownership, shapes, constants). One owner per file.
+3. Round 1 = read-only audit/investigation tasks (nobody edits) when the codebase is unfamiliar or the test command is unknown. Round 2 = edits, one owner per file, each with a done-when command.
+4. `assign` (name the worker; `auto` only for equal tasks) + show the split table (`#`, worker, task, size).
+5. While workers run, do only work no worker owns (docs, skill text, checks). Do not poll; reports arrive as messages.
+6. On each report: verify yourself, update the board, hand the next task to the least-loaded idle worker.
+7. Finish with the wrap-up table: verified for real vs not.
+
+**Test runner for the session-link mod:** `claude plugin test <mod folder>` runs every `*.test.ts(x)` under the folder (verified: 24 pass). Re-run it yourself after any worker edits the mod.
+
+**Lesson (real run):** a worker said "no test runner exists" and shipped an untested failing test; I re-ran `claude plugin test` and caught it. Always put the exact test command in "Done when" and demand the last 4 lines of its real output in the report. Round 1 (read-only audit + find the test command) before round 2 (edits) paid off. Stale tasks (>15 min open) show as stale on /board and stop counting against a worker; `clear`/`compact` are refused on a worker holding an unfinished task.
+
+**If there is no test runner,** say so plainly: a parse/lint/typecheck of the changed files is the floor, and a live try of the feature (a real message between two sessions) is the proof; never call code "tested" on a parse check alone.
+
+## Host playbook additions
+
+**Task template (copy, fill every field; a worker cannot ask follow-ups cheaply):**
+```
+[TASK <id>] <one-line goal>  (size S/M/L)
+Own (may edit): <paths>
+Read first: CONTRACT.md section <x>
+Do not touch: <paths>
+Done when: `<exact command>` exits 0 and prints <expected>
+Report: plain text <=120 words: files changed, command output summary, what NOT verified, ctx ~NNk.
+Work silently: no chat text, only tool calls, then one `report` call.
+```
+
+**Sizing and board.** Keep a board table (worker | task | size | status | ctx). S=1, M=3, L=6 points. Assign to the lowest-point idle worker; never queue on a busy worker while one is idle. Split an L by file ownership before assigning.
+
+**Verification checklist (host runs it, never the worker's word):**
+1. Re-run the done-when command yourself; paste the real tail of output.
+2. Run the end-to-end path (app/page/CLI) once, with real data, not mocks.
+3. Diff-check ownership: no file changed outside the worker's list.
+4. State in the final message: verified for real / not verified.
+
+**Failure handling.**
+- No report after a long time: call `peers`, then `link_inbox`/board; ping once with a one-line status request; if still silent, reassign to an idle worker after telling the user.
+- Report says blocked or asks a question: answer in one short message, do not restate the task.
+- Wrong result: reproduce first, then send the owner a task containing the repro command and the expected vs actual values.
+- Two workers need the same file: split the file or serialize; never allow concurrent edits.
+
+**Name hygiene.** `peers` (session-link) and `link_peers` can list different IDs for the same windows. Use the tool you assign with, copy names exactly, and re-run `peers` after any restart or rename. Tell the user which names you are using.
+
+**Rename workers (host only; verified working).**
+- Workers CANNOT rename themselves: their `rename` tool answers "not the host". Never put a rename step in a worker task.
+- The host calls `rename(worker=<current name>, name=<new name>)`. It does not rename instantly: it replies "Asked <x> to rename itself", the worker applies it on its next turn. Call `peers` to confirm before using the new name.
+- **Names change by themselves.** A worker's name is not stable: restarting a window gives a new random `pauldenchat-xxxx`, and after an assign a worker may auto-rename to `task-<id>-<verb>` (seen: `task-t3-create`). So ALWAYS call `peers` right before `assign`/`rename`, never reuse a name from earlier in the chat.
+- Best moment to rename: when a worker is idle, right after it joins or after its report. Renaming mid-task can lose the name again when it auto-renames.
+- Names: lowercase, no spaces, unique. Use numbers for identity: `worker-1`, `worker-2`, ... in join order (add a role if wanted: `ui-1`). The number belongs to the window slot, so after a restart give the new window the same number and tell the user.
+- Show `#` in the board and the split table so the user can say "give it to 2". Accept "worker 2", "w2", "2". New windows default to `worker-<next number>`.
+- After renaming, tell the user old -> new in one line and update the board.
+
+**Spawn and auto-assign.** `spawn` (host only) opens a new Terminal window as a worker, optionally with a first prompt; use it when the user wants more workers, then rename it. `assign worker="auto"` picks the least-loaded worker; use it when sizes are equal, name the worker when ownership matters.
+
+**Run slash commands in workers.** Host tool `command` (or `/run <worker|all> /compact`) makes a worker run a slash command. Allowed only: `compact`, `clear`, `cost` (commands that open no dialog) and only from the registered host. `clear`/`compact` are refused while the worker holds an unfinished task. **/model, /theme, /status, /usage, /effort are NOT allowed**: they open an interactive picker in the worker's window, the worker stays stuck on it and the setting is not applied (seen: `/model haiku` -> worker kept Sonnet). To give a worker another model, the user does `/model` in its window or starts it with `claude --model <name>`. Use `command` to `/compact` a worker that reports NEEDS COMPACT, or `/clear` before re-briefing. Confirm any command by effect (e.g. ask the worker for its ctx after `/compact`), not by the host's "asked" reply, which only proves delivery.
+
+**Cross-tool names.** `peers`/`assign`/`rename` (session-link) and `link_peers`/`link_assign` (link) can list different IDs. Pick ONE tool family for the whole run (session-link) and say so.
+
+**Report handling.** A worker report arrives as a message `[RESULT <id> from="<name>"]`. Treat it as a claim: verify (checklist above), then update the board. Reports contain `ctx ~NNk`; copy it into the board.
+
+**Test log (what a real run showed).** Small S tasks work and stay silent. A task containing a rename step fails. Restart changes names. Auto-rename happens after assign. Fixed by the rules above.
+
+**Shared contract rules.** Constants live in one file only; workers import, never copy. Contract changes are made by the host only, then every affected worker is told in one line which section changed.
+
+**Wrap-up.** When all tasks are verified: one summary table (worker, task, size, verified?), list of unverified items, and open the result for the user if it is a website or app.
 
 ## If a worker's autocompact thrashes
 Message: "Autocompact is thrashing: the context refilled to the limit within 3 turns of the previous compact, 3 times in a row." Cause: the window is too small for the work (big files re-read after every compact, screenshots).
