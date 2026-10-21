@@ -5,14 +5,16 @@ description: Multi-window host/worker mode for Claude Code sessions linked with 
 
 # multi-window
 
-Two roles. Decide which one you are: the session the user ran `/host` in is the HOST; a session that received a `[TASK ...]` message from the host is a WORKER.
+**Loading this skill turns session-link on by itself.** The session-link mod hooks the skill's load: it makes this session the HOST automatically (no `/host` needed) and appends a note naming the tools to load. It never takes over from a session that holds a task (that one stays a WORKER) or from a host that is still running; in those cases the appended note says so. When the note says you are the host, your first moves are: (1) `ToolSearch` with `select:mcp__session-link__peers,mcp__session-link__spawn,mcp__session-link__assign,mcp__session-link__rename,mcp__session-link__command`; (2) `peers`; (3) delegate with `spawn` / `assign` rather than the Agent tool, except where the playbook below says the Agent tool is better. If the note says another host is running, tell the person to run `/host` here only if they want this window to be the host.
+
+Two roles. Decide which one you are: the session the skill (or `/host`) made the host is the HOST; a session that received a `[TASK ...]` message from the host is a WORKER.
 
 ## WORKER mode (you received a task from the host)
 
 **Be silent.** While working a host task:
 - Write NO assistant text. No greetings, no plans, no "I'll now...", no progress narration, no summaries, no markdown, no emojis. Output only tool calls.
 - When finished, your ONLY communication is one call to the `report` tool (task_id from the task) with a short result, in plain text, under ~120 words: what files you changed, what you verified (with the real command output summary), and what you did NOT verify. If you failed or are blocked, report that, also short.
-- After the report call, end the turn with no text at all (if the harness forces some output, a single period).
+- After the report call, your entire reply is the single character `.` and nothing else: no "I have finished", no "nothing further", no summary, no status line. (Real run: one worker wrote "I've finished the audit... I'm not doing anything further" instead of `.`; the other got it right.)
 - If the task message is unclear, report the one specific question through `report`; do not chat.
 - Exception: if the human types directly into your window (a normal prompt, not a `[TASK ...]` message), answer them normally. Silence applies to host tasks only.
 
@@ -52,7 +54,57 @@ Two roles. Decide which one you are: the session the user ran `/host` in is the 
 6. On each report: verify yourself, update the board, hand the next task to the least-loaded idle worker.
 7. Finish with the wrap-up table: verified for real vs not.
 
-**Test runner for the session-link mod:** `claude plugin test <mod folder>` runs every `*.test.ts(x)` under the folder (verified: 24 pass). Re-run it yourself after any worker edits the mod.
+## Cost and speed playbook (session-link vs the Agent tool)
+
+**Measured on this machine, `haiku`/`sonnet`, one to three runs per row (indicative, not statistics).** Method note, because an earlier version of this section was WRONG: a transcript has one row per content block, each repeating its message's usage, and streaming rows carry partial output counts. Count each message id once, taking its LARGEST usage record; time a task from its first row to its last *assistant* row (an idle tail otherwise inflates a worker 5x). "Weighted" = cache-create x1.25 + cache-read x0.1 + output x5 + input, in input-token equivalents (this predicted a real `-p` dollar cost within 3%). Compare weighted within a model, not across. The first version double-counted workers and under-counted Agents' output, which wrongly made workers look 2-3x worse on the promo jobs and "5x slower".
+
+| Workload | Agent tool | Session-link worker(s) | Verdict |
+|---|---|---|---|
+| Trivial one-off (run the plugin tests) | 53.0k, 12.5 s | warm worker 16.6k, 7.5 s | worker 3.2x cheaper, faster |
+| 2 parallel jobs (half-file summaries) | 139.1k, 16.9 s | warm 82.1k, 14.6 s; fresh lean 138.5k, 16.4 s; fresh full-env 162.3k, 24.2 s | fresh lean = tie; warm 41% cheaper; full-env worse |
+| Stream of 4 small tasks, one codebase | 219.7k, 33 s summed | 1 lean worker 74.7k, 24.8 s summed | worker 2.9x cheaper |
+| Promo prep: Thai voice+bed (`haiku`), 7 SVGs (`sonnet`) | 114.9k, 59.9 s; 133.5k, 74.8 s | 110k, 83.1 s; 103k, 59.9 s | worker ~14% cheaper; times tie (excl. ~5 s window boot) |
+| Long task: Markdown-table formatter, 65 hidden tests (`sonnet`) | 171.1k, 102.2 s, 65/65 | 89.3k, 76.2 s, 65/65 | worker 48% cheaper, 25% faster, same quality |
+
+- Lean (default) vs full environment for a fresh worker: 138.5k / 16.4 s vs 162.3k / 24.2 s, about 15% cheaper and 32% faster. Isolated mode (`--setting-sources project`) was tried and dropped: 182k, no gain, loses the user's permission mode.
+- Spawn with `task` vs `spawn` -> `peers` -> `assign`: 13 s vs 14 s wall; saves host tool calls (1 vs 3+), not seconds.
+- Why workers can win: a worker's prompt prefix is cached across sessions and its per-task context stays small; every Agent pays a fresh ~35-50k cache-create. Why they can lose: a fresh window boots (about 5 s), a worker's context grows (cache-reads climb 79k -> 159k over 4 tasks, so `/compact` or replace it past ~100k), and workers are heavier to start than an Agent, so very wide fan-out (dozens of tiny tasks) still favours Agents.
+- Caveats: one run per row; cache warmth favours whoever runs second; the Agent copy in the promo test had read a log line giving it a hint the worker lacked; Agent usage comes from its transcript, which has no cost field.
+
+**When session-link wins over an Agent subagent**
+- Work that runs long or in parallel and should not fill your context: a worker's context is separate and its report is <=120 words; a subagent's full result lands in yours.
+- Work that needs a different (cheaper) model per task, or a window the user can watch and steer.
+- Many tasks for one warm worker: it keeps its files in context, so each later task skips the Agent's per-task startup cost (measured 2.9x cheaper over 4 tasks). Batch related small tasks onto one worker instead of one Agent each.
+
+**When to use the Agent tool instead:** very wide fan-out of tiny independent tasks, a result you need inside the same turn, and a single tiny read when no worker is idle (booting a window costs about 5 s). Do not spawn a window for a task you could finish in two tool calls.
+
+**Fastest path (use this order)**
+1. An idle worker exists (`peers`): `assign` to it. No boot, warm context. This is the cheapest and fastest.
+2. No idle worker: `spawn` with `task` (the worker starts on it at once, silent, reports with `report`) and `model`. Workers start lean (no MCP servers, no skill listings); pass `lean: false` only when the task needs MCP tools or skills. No join, rename or assign step. Set `difficulty` (or `model`) in the same call.
+3. The person's worker limit for this task is reached: do the next piece yourself or queue it. The limit is theirs to set per task (see below); never invent one.
+
+**Spawn only in trusted folders.** A worker window in a folder Claude Code does not trust yet stops at "Do you trust this folder?" and never starts (a real run: three probe workers in `/tmp` hung on it and the user had to answer each). The user's home folder is trusted and covers everything under it; `/tmp` and `/private/tmp` are NOT. Leave `dir` unset (it defaults to the host's own folder) or use a subfolder of the project; for scratch work make a folder under the project or home, never a fresh `/tmp` one. The mod now checks `~/.claude.json` first and refuses with the reason instead of opening a window that would hang. Never edit the trust settings yourself: that decision is the user's.
+
+**Workers per task are the user's call.** There is no built-in cap. When the user says how many workers a task may use ("use 3 workers", "just one"), pass it as `limit` on every `spawn` for that task (`/spawn --limit N`); with no instruction, size the fan-out to the independent pieces and say how many you opened. The plugin option `maxWorkers` is an optional hard ceiling the user can set; unset means none.
+
+**Pick the model by difficulty (Anthropic's guidance: use the smallest model that meets the quality bar, judge cost per completed task, not per request).** Pass `difficulty` on `spawn` (`/spawn --difficulty`); an explicit `model` wins. Current prices per MTok in/out from the Claude API reference: Haiku 5.5 $0.10/$0.50, Sonnet 5.5 $2/$10, Opus 5.5 $4/$20.
+
+| difficulty | model | use for |
+|---|---|---|
+| easy | `haiku` | simple, high-volume or read-only work: audits, greps, doc/consistency checks, formatting, running tests, extraction, summaries |
+| medium | `sonnet` | everyday coding and agent work with a clear spec: multi-file edits against a contract, tests, refactors with a done-when command |
+| hard | `opus` | the hardest reasoning: ambiguous design, root-causing an unknown bug, subtle correctness (concurrency, security), long-horizon work, final review of high-stakes changes |
+
+Rules of thumb: start one tier down when a "done when" command can check the result (the host verifies anyway), escalate one tier and retry when the check fails twice, never use `hard` for read-only lookups, and keep the strongest model for the host (planning, verifying, integrating). Name `fable` only when the user asks for Anthropic's most capable model. Workers start with a 100k auto-compact window so they stay small; for UI or big-file workers pass a larger window (see thrash section).
+
+**Manage the flow for quality**
+- Contract first, one owner per file, "done when" = an exact command. Then run workers in parallel on disjoint files; the host does only work no worker owns.
+- Never ship on a report: re-run the command yourself (reports are claims; see the verification checklist). A cheap model is fine because the host verifies.
+- Mutation-check a new test (break the code, see it fail) before trusting it.
+- Reuse over respawn: finish a worker's task, then `assign` the next one to it; `/compact` or `/clear` only when it reports NEEDS COMPACT.
+- A worker's task can also arrive as its first prompt (that is what `spawn task` does): it registers the same way, stays silent and ends with `.`.
+
+**Test runner for the session-link mod:** `claude plugin test <mod folder>` runs every `*.test.ts(x)` under the folder (verified: 40 pass). Re-run it yourself after any worker edits the mod.
 
 **Lesson (real run):** a worker said "no test runner exists" and shipped an untested failing test; I re-ran `claude plugin test` and caught it. Always put the exact test command in "Done when" and demand the last 4 lines of its real output in the report. Round 1 (read-only audit + find the test command) before round 2 (edits) paid off. Stale tasks (>15 min open) show as stale on /board and stop counting against a worker; `clear`/`compact` are refused on a worker holding an unfinished task.
 
@@ -96,7 +148,7 @@ Work silently: no chat text, only tool calls, then one `report` call.
 - Show `#` in the board and the split table so the user can say "give it to 2". Accept "worker 2", "w2", "2". New windows default to `worker-<next number>`.
 - After renaming, tell the user old -> new in one line and update the board.
 
-**Spawn and auto-assign.** `spawn` (host only) opens a new Terminal window as a worker, optionally with a first prompt; use it when the user wants more workers, then rename it. `assign worker="auto"` picks the least-loaded worker; use it when sizes are equal, name the worker when ownership matters.
+**Spawn and auto-assign.** `spawn` (host only) opens a new Terminal window as a worker, optionally with a first prompt; use it when the user wants more workers, then rename it. **No built-in worker cap:** the host passes `limit` (the number the user asked for this task; counts running sessions in the spawn folder plus windows opened in the last 15 s that have not joined yet) and the mod refuses a spawn beyond it with "worker limit reached"; parallel spawns are serialized so a limit holds even when calls are fired together; the `maxWorkers` plugin option is an optional hard ceiling. Spawn only when the work splits cleanly; if a worker is idle, assign to it instead. If `spawn` says the session is not the host, the host record is stale or belongs to another window: ask the user to type `/host` in this window (the model cannot run it). `assign worker="auto"` picks the least-loaded worker; use it when sizes are equal, name the worker when ownership matters.
 
 **Run slash commands in workers.** Host tool `command` (or `/run <worker|all> /compact`) makes a worker run a slash command. Allowed only: `compact`, `clear`, `cost` (commands that open no dialog) and only from the registered host. `clear`/`compact` are refused while the worker holds an unfinished task. **/model, /theme, /status, /usage, /effort are NOT allowed**: they open an interactive picker in the worker's window, the worker stays stuck on it and the setting is not applied (seen: `/model haiku` -> worker kept Sonnet). To give a worker another model, the user does `/model` in its window or starts it with `claude --model <name>`. Use `command` to `/compact` a worker that reports NEEDS COMPACT, or `/clear` before re-briefing. Confirm any command by effect (e.g. ask the worker for its ctx after `/compact`), not by the host's "asked" reply, which only proves delivery.
 
@@ -122,3 +174,7 @@ Message: "Autocompact is thrashing: the context refilled to the limit within 3 t
 - **Compact at 100k tokens.** 100,000 is the smallest value Claude Code accepts for the auto-compact window (range 100,000 to 1,000,000), so it can be set for real. Start each worker with `CLAUDE_CODE_AUTO_COMPACT_WINDOW=100000 claude`; the variable beats any setting in a settings file and only affects that process. Do NOT use `/autocompact` or put `autoCompactWindow` in your user settings: that is saved per model and would change every session including the host. The window is the size the auto-compact logic works against, so compaction starts a little before 100k, not exactly at it (exact trigger point not verified here). Automatic compaction cannot be tied to "after every turn"; it runs when the threshold is reached.
 - Optionally run `/compact` by hand in a worker between big tasks.
 - `session-link` option "Auto-run tasks from the host" must be on in the worker windows for tasks to start by themselves.
+
+
+## Known gap: /clear on a worker
+Seen on a real run: after the host ran `command /clear` on a worker, the worker kept running but disappeared from `peers` until it finished its next turn (the heartbeat re-registers it), so `assign` said "no session matches". Root cause not found. Workaround: prefer `assign` to a warm worker without clearing; if you did clear, wake it with one `SendMessage` ping, then `peers`, then `assign`; or kill it and `spawn` a fresh one with the task.
