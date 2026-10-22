@@ -1,11 +1,11 @@
 ---
 name: multi-window
-description: Multi-window host/worker mode for Claude Code sessions linked with Agent Link (the session-link plugin). Use when the user says multi window, multi-window, host and workers, run several Claude windows, or assigns work to other sessions. Makes workers completely silent (tool calls and one report only, no chat text) and keeps their context small; gives the host the contract-first, verify-yourself workflow.
+description: Multi-window host/worker mode for Claude Code sessions linked with AI Link (the ai-link plugin). Use when the user says multi window, multi-window, host and workers, run several Claude windows, or assigns work to other sessions. Makes workers completely silent (tool calls and one report only, no chat text) and keeps their context small; gives the host the contract-first, verify-yourself workflow.
 ---
 
 # multi-window
 
-**Loading this skill turns session-link on by itself.** The session-link mod hooks the skill's load: it makes this session the HOST automatically (no `/host` needed) and appends a note naming the tools to load. It never takes over from a session that holds a task (that one stays a WORKER) or from a host that is still running; in those cases the appended note says so. When the note says you are the host, your first moves are: (1) `ToolSearch` with `select:mcp__session-link__peers,mcp__session-link__spawn,mcp__session-link__assign,mcp__session-link__rename,mcp__session-link__command`; (2) `peers`; (3) delegate with `spawn` / `assign` rather than the Agent tool, except where the playbook below says the Agent tool is better. If the note says another host is running, tell the person to run `/host` here only if they want this window to be the host.
+**Loading this skill turns ai-link on by itself.** The ai-link mod hooks the skill's load: it makes this session the HOST automatically (no `/host` needed) and appends a note naming the tools to load. It never takes over from a session that holds a task (that one stays a WORKER) or from a host that is still running; in those cases the appended note says so. When the note says you are the host, your first moves are: (1) `ToolSearch` with `select:mcp__ai-link__peers,mcp__ai-link__spawn,mcp__ai-link__assign,mcp__ai-link__rename,mcp__ai-link__command`; (2) `peers`; (3) delegate with `spawn` / `assign` rather than the Agent tool, except where the playbook below says the Agent tool is better. If the note says another host is running, tell the person to run `/host` here only if they want this window to be the host.
 
 Two roles. Decide which one you are: the session the skill (or `/host`) made the host is the HOST; a session that received a `[TASK ...]` message from the host is a WORKER.
 
@@ -54,7 +54,7 @@ Two roles. Decide which one you are: the session the skill (or `/host`) made the
 6. On each report: verify yourself, update the board, hand the next task to the least-loaded idle worker.
 7. Finish with the wrap-up table: verified for real vs not.
 
-## Cost and speed playbook (session-link vs the Agent tool)
+## Cost and speed playbook (ai-link vs the Agent tool)
 
 **Measured on this machine, `haiku`/`sonnet`, one to three runs per row (indicative, not statistics).** Method note, because an earlier version of this section was WRONG: a transcript has one row per content block, each repeating its message's usage, and streaming rows carry partial output counts. Count each message id once, taking its LARGEST usage record; time a task from its first row to its last *assistant* row (an idle tail otherwise inflates a worker 5x). "Weighted" = cache-create x1.25 + cache-read x0.1 + output x5 + input, in input-token equivalents (this predicted a real `-p` dollar cost within 3%). Compare weighted within a model, not across. The first version double-counted workers and under-counted Agents' output, which wrongly made workers look 2-3x worse on the promo jobs and "5x slower".
 
@@ -71,7 +71,7 @@ Two roles. Decide which one you are: the session the skill (or `/host`) made the
 - Why workers can win: a worker's prompt prefix is cached across sessions and its per-task context stays small; every Agent pays a fresh ~35-50k cache-create. Why they can lose: a fresh window boots (about 5 s), a worker's context grows (cache-reads climb 79k -> 159k over 4 tasks, so `/compact` or replace it past ~100k), and workers are heavier to start than an Agent, so very wide fan-out (dozens of tiny tasks) still favours Agents.
 - Caveats: one run per row; cache warmth favours whoever runs second; the Agent copy in the promo test had read a log line giving it a hint the worker lacked; Agent usage comes from its transcript, which has no cost field.
 
-**When session-link wins over an Agent subagent**
+**When ai-link wins over an Agent subagent**
 - Work that runs long or in parallel and should not fill your context: a worker's context is separate and its report is <=120 words; a subagent's full result lands in yours.
 - Work that needs a different (cheaper) model per task, or a window the user can watch and steer.
 - Many tasks for one warm worker: it keeps its files in context, so each later task skips the Agent's per-task startup cost (measured 2.9x cheaper over 4 tasks). Batch related small tasks onto one worker instead of one Agent each.
@@ -104,7 +104,7 @@ Rules of thumb: start one tier down when a "done when" command can check the res
 - Reuse over respawn: finish a worker's task, then `assign` the next one to it; `/compact` or `/clear` only when it reports NEEDS COMPACT.
 - A worker's task can also arrive as its first prompt (that is what `spawn task` does): it registers the same way, stays silent and ends with `.`.
 
-**Test runner for the session-link mod:** `claude plugin test <mod folder>` runs every `*.test.ts(x)` under the folder (verified: 40 pass). Re-run it yourself after any worker edits the mod.
+**Test runner for the ai-link mod:** `claude plugin test <mod folder>` runs every `*.test.ts(x)` under the folder (verified: 40 pass). Re-run it yourself after any worker edits the mod.
 
 **Lesson (real run):** a worker said "no test runner exists" and shipped an untested failing test; I re-ran `claude plugin test` and caught it. Always put the exact test command in "Done when" and demand the last 4 lines of its real output in the report. Round 1 (read-only audit + find the test command) before round 2 (edits) paid off. Stale tasks (>15 min open) show as stale on /board and stop counting against a worker; `clear`/`compact` are refused on a worker holding an unfinished task.
 
@@ -137,7 +137,7 @@ Work silently: no chat text, only tool calls, then one `report` call.
 - Wrong result: reproduce first, then send the owner a task containing the repro command and the expected vs actual values.
 - Two workers need the same file: split the file or serialize; never allow concurrent edits.
 
-**Name hygiene.** `peers` (session-link) and `link_peers` can list different IDs for the same windows. Use the tool you assign with, copy names exactly, and re-run `peers` after any restart or rename. Tell the user which names you are using.
+**Name hygiene.** `peers` (ai-link) and `link_peers` can list different IDs for the same windows. Use the tool you assign with, copy names exactly, and re-run `peers` after any restart or rename. Tell the user which names you are using.
 
 **Rename workers (host only; verified working).**
 - Workers CANNOT rename themselves: their `rename` tool answers "not the host". Never put a rename step in a worker task.
@@ -152,7 +152,7 @@ Work silently: no chat text, only tool calls, then one `report` call.
 
 **Run slash commands in workers.** Host tool `command` (or `/run <worker|all> /compact`) makes a worker run a slash command. Allowed only: `compact`, `clear`, `cost` (commands that open no dialog) and only from the registered host. `clear`/`compact` are refused while the worker holds an unfinished task. **/model, /theme, /status, /usage, /effort are NOT allowed**: they open an interactive picker in the worker's window, the worker stays stuck on it and the setting is not applied (seen: `/model haiku` -> worker kept Sonnet). To give a worker another model, the user does `/model` in its window or starts it with `claude --model <name>`. Use `command` to `/compact` a worker that reports NEEDS COMPACT, or `/clear` before re-briefing. Confirm any command by effect (e.g. ask the worker for its ctx after `/compact`), not by the host's "asked" reply, which only proves delivery.
 
-**Cross-tool names.** `peers`/`assign`/`rename` (session-link) and `link_peers`/`link_assign` (link) can list different IDs. Pick ONE tool family for the whole run (session-link) and say so.
+**Cross-tool names.** `peers`/`assign`/`rename` (ai-link) and `link_peers`/`link_assign` (link) can list different IDs. Pick ONE tool family for the whole run (ai-link) and say so.
 
 **Report handling.** A worker report arrives as a message `[RESULT <id> from="<name>"]`. Treat it as a claim: verify (checklist above), then update the board. Reports contain `ctx ~NNk`; copy it into the board.
 
@@ -173,11 +173,11 @@ Message: "Autocompact is thrashing: the context refilled to the limit within 3 t
 
 - **Compact at 100k tokens.** 100,000 is the smallest value Claude Code accepts for the auto-compact window (range 100,000 to 1,000,000), so it can be set for real. Start each worker with `CLAUDE_CODE_AUTO_COMPACT_WINDOW=100000 claude`; the variable beats any setting in a settings file and only affects that process. Do NOT use `/autocompact` or put `autoCompactWindow` in your user settings: that is saved per model and would change every session including the host. The window is the size the auto-compact logic works against, so compaction starts a little before 100k, not exactly at it (exact trigger point not verified here). Automatic compaction cannot be tied to "after every turn"; it runs when the threshold is reached.
 - Optionally run `/compact` by hand in a worker between big tasks.
-- `session-link` option "Auto-run tasks from the host" must be on in the worker windows for tasks to start by themselves.
+- `ai-link` option "Auto-run tasks from the host" must be on in the worker windows for tasks to start by themselves.
 
 
 ## Antigravity CLI (`agy`) workers
-A session can also hand work to an Antigravity CLI session (`agy`, tested on 1.4.4) through the `link-bridge` MCP server, which both Claude Code and `agy` have registered as `link`. This is separate from the session-link `spawn`/`assign` tools: use the `mcp__link__link_*` tools for agy workers (load them with ToolSearch `select:mcp__link__link_peers,mcp__link__link_host,mcp__link__link_assign,mcp__link__link_inbox,mcp__link__link_board`) and pick ONE family per run.
+A session can also hand work to an Antigravity CLI session (`agy`, tested on 1.4.4) through the `link-bridge` MCP server, which both Claude Code and `agy` have registered as `link`. This is separate from the ai-link `spawn`/`assign` tools: use the `mcp__link__link_*` tools for agy workers (load them with ToolSearch `select:mcp__link__link_peers,mcp__link__link_host,mcp__link__link_assign,mcp__link__link_inbox,mcp__link__link_board`) and pick ONE family per run.
 1. `link_host on: true`, then start a worker: `~/link-bridge/agy-worker.sh -d <trusted folder> -m <model>` (headless) or add `-w` for an interactive window. Run it with Bash; it returns at once.
 2. `link_peers`: the worker appears as `agy-<folder>-<id> [agy]`. Address it by that exact name (other `[claude]` / `[codex]` peers on the list are the user's own windows: never assign to them unless asked).
 3. `link_assign worker=<exact name> task=<self-contained task>`, then `link_inbox wait_seconds=100` for the `RESULT`. Verify it like any report; agy workers are claims too.
