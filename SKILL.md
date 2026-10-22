@@ -1,6 +1,6 @@
 ---
 name: multi-window
-description: Multi-window host/worker mode for Claude Code sessions linked with session-link. Use when the user says multi window, multi-window, host and workers, run several Claude windows, or assigns work to other sessions. Makes workers completely silent (tool calls and one report only, no chat text) and keeps their context small; gives the host the contract-first, verify-yourself workflow.
+description: Multi-window host/worker mode for Claude Code sessions linked with Agent Link (the session-link plugin). Use when the user says multi window, multi-window, host and workers, run several Claude windows, or assigns work to other sessions. Makes workers completely silent (tool calls and one report only, no chat text) and keeps their context small; gives the host the contract-first, verify-yourself workflow.
 ---
 
 # multi-window
@@ -175,6 +175,24 @@ Message: "Autocompact is thrashing: the context refilled to the limit within 3 t
 - Optionally run `/compact` by hand in a worker between big tasks.
 - `session-link` option "Auto-run tasks from the host" must be on in the worker windows for tasks to start by themselves.
 
+
+## Antigravity CLI (`agy`) workers
+A session can also hand work to an Antigravity CLI session (`agy`, tested on 1.4.4) through the `link-bridge` MCP server, which both Claude Code and `agy` have registered as `link`. This is separate from the session-link `spawn`/`assign` tools: use the `mcp__link__link_*` tools for agy workers (load them with ToolSearch `select:mcp__link__link_peers,mcp__link__link_host,mcp__link__link_assign,mcp__link__link_inbox,mcp__link__link_board`) and pick ONE family per run.
+1. `link_host on: true`, then start a worker: `~/link-bridge/agy-worker.sh -d <trusted folder> -m <model>` (headless) or add `-w` for an interactive window. Run it with Bash; it returns at once.
+2. `link_peers`: the worker appears as `agy-<folder>-<id> [agy]`. Address it by that exact name (other `[claude]` / `[codex]` peers on the list are the user's own windows: never assign to them unless asked).
+3. `link_assign worker=<exact name> task=<self-contained task>`, then `link_inbox wait_seconds=100` for the `RESULT`. Verify it like any report; agy workers are claims too.
+- Models (`agy models`): easy -> `gemini-3.8-flash-low`; medium -> `gemini-3.8-flash-high` or `claude-sonnet-4-6`; hard -> `claude-opus-4-6-thinking`.
+- Headless agy cannot ask for permission: a task needing a shell or file access is auto-denied unless a narrow rule exists in `~/.gemini/antigravity-cli/settings.json`. Do not use `--dangerously-skip-permissions` and do not add wildcard rules; for such tasks use an interactive window (`-w`) so the user can approve, or tell the user which `command(<prefix>)` rule to add.
+- Security question, like Claude's: an interactive agy window in an untrusted folder stops at "Do you trust the contents of this project?" and never starts; headless runs don't ask. `agy-worker.sh -w` pre-checks `trustedWorkspaces` in that settings file and refuses with the reason. Use a trusted folder (`/tmp` is) or ask the user to open agy there once and answer; never edit the trust list yourself.
+- The worker stops after two empty `link_inbox` waits (about 200 s) or when its first task is done and nothing follows; start another when you have more work.
+- **Image like an agent:** to have agy make an image and then be gone, run `~/link-bridge/agy-image.sh [-o out.jpg] "description"` with Bash. It starts a headless agy, uses its `generate_image` tool once, copies the file, prints the path and exits (no window, no link tools, no permission rule needed). Look at the image yourself before saying it is good. If it fails with `429 RESOURCE_EXHAUSTED` the account's image quota is used up: say so and stop, do not retry in a loop.
+- Verified end to end on this machine: Claude host -> `agy` (gemini-3.8-flash-low) -> `RESULT t6fb4 ... 391 agy`, and two sequential tasks to one worker.
+
+## Codex as an agent
+For a one-shot task, run `~/link-bridge/codex-agent.sh [-d dir] [-s read-only|workspace-write] [-t secs] "task"` with Bash: it runs `codex exec`, prints the final message and exits, like a subagent (verified: 17 x 23 -> `391` in 12 s).
+- Default is the read-only sandbox (a write attempt is refused, verified); pass `-s workspace-write` only when the task must edit files in `-d`. Never use Codex's bypass or full-access options; the helper does not offer them.
+- Treat the result as a claim and verify it. Name the folder with `-d`; set `-t` for long tasks.
+- For a long-lived Codex worker, use the `link` MCP tools (`link_assign` / `link_inbox`) with a Codex session that has the bridge; the Codex peer on the list may be the user's own window, so assign to it only when asked.
 
 ## Known gap: /clear on a worker
 Seen on a real run: after the host ran `command /clear` on a worker, the worker kept running but disappeared from `peers` until it finished its next turn (the heartbeat re-registers it), so `assign` said "no session matches". Root cause not found. Workaround: prefer `assign` to a warm worker without clearing; if you did clear, wake it with one `SendMessage` ping, then `peers`, then `assign`; or kill it and `spawn` a fresh one with the task.
